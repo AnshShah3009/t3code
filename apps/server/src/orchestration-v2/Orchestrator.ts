@@ -413,6 +413,7 @@ export interface OrchestratorV2Shape {
   readonly getTasksExecutedElsewhere: (input: {
     readonly threadId: ThreadId;
     readonly runIds: ReadonlyArray<RunId>;
+    readonly includeProviderNative?: boolean;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2Subagent>, OrchestratorV2Error>;
   readonly getThreadProjection: (
     threadId: ThreadId,
@@ -1286,9 +1287,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     function* <P extends Pick<OrchestrationV2ThreadProjection, "thread" | "subagents">>(
       projection: P,
       runIds: ReadonlyArray<RunId>,
+      includeProviderNative = false,
     ) {
       const elsewhere = yield* projectionStore
-        .getTasksExecutedElsewhere({ threadId: projection.thread.id, runIds })
+        .getTasksExecutedElsewhere({
+          threadId: projection.thread.id,
+          runIds,
+          includeProviderNative,
+        })
         .pipe(
           Effect.mapError(
             (cause) => new OrchestratorProjectionError({ threadId: projection.thread.id, cause }),
@@ -1302,7 +1308,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   /**
    * A thread's progress, read with its whole task list: only a thread listing a native subagent
-   * can have tasks listed elsewhere that its runs execute.
+   * can have tasks listed elsewhere that its runs execute, including nested native subagents.
    */
   const withNativeSubagentDelegations = <
     P extends Pick<OrchestrationV2ThreadProjection, "thread" | "subagents" | "runs">,
@@ -1313,6 +1319,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ? withTasksExecutedElsewhere(
           projection,
           projection.runs.map((run) => run.id),
+          true,
         )
       : Effect.succeed(projection);
 
