@@ -1,6 +1,8 @@
 import type { SDKModel } from "@cursor/sdk";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import type { CursorSettings } from "../settings.ts";
 import { CursorSettings as CursorSettingsSchema } from "../settings.ts";
@@ -351,6 +353,28 @@ describe("checkCursorProviderStatus", () => {
       }).pipe(Effect.provideService(CursorSdkCatalog.CursorSdkCatalog, catalog));
 
       expect(provider).toMatchObject(expected);
+    }),
+  );
+
+  it.effect("reports a slow SDK sign-in check as warning so threads can still resume", () =>
+    Effect.gen(function* () {
+      const provider = yield* checkCursorProviderStatus(baseCursorSettings, {
+        CURSOR_API_KEY: "enterprise-key",
+      }).pipe(
+        Effect.provideService(
+          CursorSdkCatalog.CursorSdkCatalog,
+          yield* CursorSdkCatalog.makeCursorSdkCatalog({
+            readUser: () => Effect.never,
+            readModels: () => Effect.never,
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("15 seconds");
+      expect(yield* Fiber.join(provider)).toMatchObject({
+        status: "warning",
+        auth: { status: "unknown" },
+      });
     }),
   );
 

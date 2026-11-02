@@ -323,6 +323,8 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
   }
 
   if (Option.isNone(catalogResult.success)) {
+    // A slow sign-in check is not a failed provider: reporting "error" makes
+    // thread resume reject the provider until the next successful probe.
     return buildServerProvider({
       presentation: CURSOR_PRESENTATION,
       enabled: cursorSettings.enabled,
@@ -331,9 +333,9 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
       probe: {
         installed: true,
         version: null,
-        status: "error",
+        status: "warning",
         auth: { status: "unknown" },
-        message: `Cursor SDK catalog request timed out after ${CURSOR_SDK_CATALOG_TIMEOUT_MS}ms.`,
+        message: `Cursor SDK catalog request timed out after ${CURSOR_SDK_CATALOG_TIMEOUT_MS}ms. Cursor may still be signing in; threads can resume once it finishes.`,
       },
     });
   }
