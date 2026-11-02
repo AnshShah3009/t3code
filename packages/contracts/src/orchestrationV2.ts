@@ -400,6 +400,12 @@ export const OrchestrationV2LimitRecovery = Schema.Struct({
   resetAt: IsoDateTime,
   autoResume: Schema.Boolean,
   snooze: Schema.optional(Schema.Boolean),
+  /** Automatic retries made after an auto-resumed run failed with a usage limit again. */
+  resumeAttempts: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  ),
+  /** When a retry becomes due. Absent for the first resume, which is due at `resetAt`. */
+  nextResumeAt: Schema.optional(IsoDateTime),
 });
 export type OrchestrationV2LimitRecovery = typeof OrchestrationV2LimitRecovery.Type;
 
@@ -408,6 +414,10 @@ export const OrchestrationV2LimitRecoveryUpdate = Schema.Struct({
   resetAt: IsoDateTime,
   autoResume: Schema.optional(Schema.Boolean),
   snooze: Schema.optional(Schema.Boolean),
+  resumeAttempts: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  ),
+  nextResumeAt: Schema.optional(IsoDateTime),
 }).check(
   Schema.makeFilter(
     (update) =>

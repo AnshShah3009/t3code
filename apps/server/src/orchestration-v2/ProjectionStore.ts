@@ -678,6 +678,14 @@ export class ProjectionStoreV2 extends Context.Service<ProjectionStoreV2, Projec
   "t3/orchestration-v2/ProjectionStore/ProjectionStoreV2",
 ) {}
 
+/**
+ * An auto-resumed run that fails with a usage limit again is retried this often,
+ * at most LIMIT_RESUME_MAX_RETRIES times, because providers can still reject
+ * requests right at their reported reset time.
+ */
+export const LIMIT_RESUME_RETRY_INTERVAL_MS = 60 * 1000;
+export const LIMIT_RESUME_MAX_RETRIES = 5;
+
 export const ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION = 2;
 
 function upsertById<T extends { readonly id: string }>(items: ReadonlyArray<T>, next: T): Array<T> {
@@ -3893,13 +3901,20 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
             AND json_extract(item.payload_json, '$.failure.class') = 'usage_limit'
             AND json_extract(item.payload_json, '$.failure.resetAt') IS NOT NULL
-            AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(COALESCE(r.completed_at, json_extract(t.payload_json, '$.updatedAt')))
+            AND (
+              julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(COALESCE(r.completed_at, json_extract(t.payload_json, '$.updatedAt')))
+              -- An armed auto-resume whose run failed again after the reset is a retry.
+              OR (
+                json_extract(t.payload_json, '$.limitRecovery.autoResume') = 1
+                AND json_extract(t.payload_json, '$.limitRecovery.runId') IS NOT r.run_id
+              )
+            )
             AND (
               (
                 json_extract(t.payload_json, '$.limitRecovery.runId') IS r.run_id
                 AND json_extract(t.payload_json, '$.limitRecovery.resetAt') IS json_extract(item.payload_json, '$.failure.resetAt')
                 AND json_extract(t.payload_json, '$.limitRecovery.autoResume') = 1
-                AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) <= julianday(${DateTime.formatIso(options.now)})
+                AND julianday(COALESCE(json_extract(t.payload_json, '$.limitRecovery.nextResumeAt'), json_extract(item.payload_json, '$.failure.resetAt'))) <= julianday(${DateTime.formatIso(options.now)})
                 AND (
                   json_extract(t.payload_json, '$.snoozedUntil') IS NULL
                   OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${DateTime.formatIso(options.now)})
@@ -3965,7 +3980,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             MIN(CASE WHEN julianday(snoozed_until) > julianday(${nowIso})
               THEN (julianday(snoozed_until) - 2440587.5) * 86400000 END) AS snooze_ms
           FROM (
-            SELECT json_extract(payload_json, '$.limitRecovery.resetAt') AS reset_at,
+            SELECT COALESCE(
+                json_extract(payload_json, '$.limitRecovery.nextResumeAt'),
+                json_extract(payload_json, '$.limitRecovery.resetAt')
+              ) AS reset_at,
               json_extract(payload_json, '$.snoozedUntil') AS snoozed_until
             FROM orchestration_v2_projection_threads
             WHERE deleted_at IS NULL

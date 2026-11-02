@@ -4994,18 +4994,22 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           (row) => row.id === threadId,
         ),
       );
-      assert.strictEqual(yield* store.getLimitRecoveryWakeAt(now), DateTime.toEpochMillis(reset));
-      assert.isNull(yield* store.getLimitRecoveryWakeAt(reset));
+      const resumeAt = reset;
+      assert.strictEqual(
+        yield* store.getLimitRecoveryWakeAt(now),
+        DateTime.toEpochMillis(resumeAt),
+      );
+      assert.isNull(yield* store.getLimitRecoveryWakeAt(resumeAt));
       const due = (yield* store.getLimitRecoveryCandidates({
         ...recoveryOptions,
-        now: reset,
+        now: resumeAt,
       })).find((row) => row.id === threadId)!;
       assert.deepEqual(due.limitRecovery, recovery);
       yield* sql`INSERT INTO orchestration_v2_projection_runtime_requests
         (runtime_request_id, thread_id, node_id, kind, status, created_at, payload_json)
         VALUES ('limit-shell:pending-request', ${threadId}, ${original.rootNodeId}, 'approval', 'pending', ${DateTime.formatIso(now)}, '{}')`;
       assert.isUndefined(
-        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, now: reset })).find(
+        (yield* store.getLimitRecoveryCandidates({ ...recoveryOptions, now: resumeAt })).find(
           (row) => row.id === threadId,
         ),
       );

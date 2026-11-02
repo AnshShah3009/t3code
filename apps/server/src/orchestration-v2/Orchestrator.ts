@@ -3372,7 +3372,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         run?.id !== command.limitRecovery.runId ||
         failure?.class !== "usage_limit" ||
         failure.resetAt !== command.limitRecovery.resetAt ||
-        resetMs <= DateTime.toEpochMillis(run.completedAt ?? run.requestedAt) ||
+        // A retry is armed after its reset has passed; only a retry may do that.
+        (command.limitRecovery.nextResumeAt == null &&
+          resetMs <= DateTime.toEpochMillis(run.completedAt ?? run.requestedAt)) ||
         projection.runtimeRequests.some((request) => request.status === "pending")
       ) {
         return yield* new OrchestratorDispatchError({
@@ -5380,7 +5382,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         recovery.requestId !== command.usageLimitRecoveryRequestId ||
         recovery.runId !== run.id ||
         recovery.resetAt !== failure.resetAt ||
-        Date.parse(recovery.resetAt) > DateTime.toEpochMillis(now) ||
+        Date.parse(recovery.nextResumeAt ?? recovery.resetAt) > DateTime.toEpochMillis(now) ||
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
         projection.thread.settledOverride === "settled" ||

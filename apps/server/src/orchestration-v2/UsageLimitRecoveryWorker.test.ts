@@ -116,3 +116,108 @@ describe("limitRecoveryCommand arming", () => {
     assert.isNull(limitRecoveryCommand(thread, true, nowMs));
   });
 });
+
+describe("limitRecoveryCommand resume and retry", () => {
+  const MINUTE_MS = 60_000;
+  const armed = (
+    resetAgoMs: number,
+    overrides: Partial<
+      NonNullable<ProjectionStore.ProjectionLimitRecoveryCandidate["limitRecovery"]>
+    > = {},
+  ) => {
+    const base = failedThread(2 * HOUR_MS, resetAgoMs);
+    return {
+      ...base,
+      limitRecovery: {
+        runId: RunId.make("run:limited"),
+        resetAt: base.usageLimitResetAt!,
+        autoResume: true,
+        snooze: false,
+        requestId: "request:limited",
+        ...overrides,
+      },
+    } as ProjectionStore.ProjectionLimitRecoveryCandidate;
+  };
+
+  it("resumes at the reported reset time on the first attempt", () => {
+    // Reset is 60s in the future.
+    const thread = armed(-60_000);
+    assert.isNull(limitRecoveryCommand(thread, true, nowMs));
+    assert.equal(limitRecoveryCommand(thread, true, nowMs + 60_000)?.type, "message.dispatch");
+  });
+
+  it("arms a retry one minute after a resumed run fails again past the reset", () => {
+    // The auto-resumed run (run:original's successor) failed at nowMs - 30s, after the reset.
+    const failedAgo = 30_000;
+    const base = failedThread(failedAgo, 60 * 60_000);
+    const thread = {
+      ...base,
+      latestRunId: RunId.make("run:resumed"),
+      limitRecovery: {
+        runId: RunId.make("run:original"),
+        resetAt: base.usageLimitResetAt!,
+        autoResume: true,
+        snooze: false,
+      },
+    } as ProjectionStore.ProjectionLimitRecoveryCandidate;
+    const retry = limitRecoveryCommand(thread, true, nowMs);
+    assert.equal(retry?.type, "thread.metadata.update");
+    assert.equal(
+      retry?.type === "thread.metadata.update" && retry.limitRecovery?.resumeAttempts,
+      1,
+    );
+    assert.equal(
+      retry?.type === "thread.metadata.update" && retry.limitRecovery?.nextResumeAt,
+      DateTime.formatIso(DateTime.makeUnsafe(nowMs - failedAgo + MINUTE_MS)),
+    );
+  });
+
+  it("waits for the retry time before resuming again", () => {
+    const retryAt = nowMs + MINUTE_MS;
+    const thread = {
+      ...armed(60 * 60_000, {
+        runId: RunId.make("run:resumed"),
+        resumeAttempts: 1,
+        nextResumeAt: DateTime.formatIso(DateTime.makeUnsafe(retryAt)),
+      }),
+      latestRunId: RunId.make("run:resumed"),
+    };
+    assert.isNull(limitRecoveryCommand(thread, true, nowMs));
+    assert.equal(limitRecoveryCommand(thread, true, retryAt)?.type, "message.dispatch");
+  });
+
+  it("stops retrying after the maximum number of retries", () => {
+    const base = failedThread(30_000, 60 * 60_000);
+    const thread = {
+      ...base,
+      latestRunId: RunId.make("run:resumed"),
+      limitRecovery: {
+        runId: RunId.make("run:original"),
+        resetAt: base.usageLimitResetAt!,
+        autoResume: true,
+        snooze: false,
+        resumeAttempts: ProjectionStore.LIMIT_RESUME_MAX_RETRIES,
+      },
+    } as ProjectionStore.ProjectionLimitRecoveryCandidate;
+    assert.isNull(limitRecoveryCommand(thread, true, nowMs));
+  });
+
+  it("treats a fresh failure with a future reset as a normal arm, not a retry", () => {
+    const base = failedThread(30_000, -60 * 60_000);
+    const thread = {
+      ...base,
+      latestRunId: RunId.make("run:fresh"),
+      limitRecovery: {
+        runId: RunId.make("run:old"),
+        resetAt: base.usageLimitResetAt!,
+        autoResume: true,
+        snooze: false,
+      },
+    } as ProjectionStore.ProjectionLimitRecoveryCandidate;
+    const arm = limitRecoveryCommand(thread, true, nowMs);
+    assert.equal(arm?.type, "thread.metadata.update");
+    assert.isUndefined(
+      arm?.type === "thread.metadata.update" ? arm.limitRecovery?.resumeAttempts : 0,
+    );
+  });
+});

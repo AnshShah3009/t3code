@@ -31,14 +31,36 @@ export function limitRecoveryCommand(
   )
     return null;
   const resetMs = Date.parse(thread.usageLimitResetAt);
-  // An already-expired window reported with a fresh failure cannot start a retry loop.
-  if (
-    !Number.isFinite(resetMs) ||
-    resetMs <= DateTime.toEpochMillis(thread.latestRunCompletedAt ?? thread.updatedAt)
-  )
-    return null;
-  const identity = `${thread.id}:${thread.latestRunId}:${resetMs}`;
+  if (!Number.isFinite(resetMs)) return null;
+  const completedMs = DateTime.toEpochMillis(thread.latestRunCompletedAt ?? thread.updatedAt);
   const recovery = thread.limitRecovery;
+  // An armed auto-resume whose run failed again after the reset is a retry, not a fresh failure.
+  const isRetry =
+    recovery?.autoResume === true &&
+    recovery.runId !== thread.latestRunId &&
+    resetMs <= completedMs;
+  // An already-expired window reported with a fresh failure cannot start a retry loop.
+  if (!isRetry && resetMs <= completedMs) return null;
+  const identity = `${thread.id}:${thread.latestRunId}:${resetMs}`;
+  if (isRetry) {
+    const resumeAttempts = (recovery.resumeAttempts ?? 0) + 1;
+    if (!autoResume || resumeAttempts > ProjectionStore.LIMIT_RESUME_MAX_RETRIES) return null;
+    return {
+      type: "thread.metadata.update",
+      commandId: CommandId.make(`limit-retry:${identity}:${resumeAttempts}`),
+      threadId: thread.id,
+      limitRecovery: {
+        runId: thread.latestRunId,
+        resetAt: thread.usageLimitResetAt,
+        autoResume: true,
+        snooze: false,
+        resumeAttempts,
+        nextResumeAt: DateTime.formatIso(
+          DateTime.makeUnsafe(completedMs + ProjectionStore.LIMIT_RESUME_RETRY_INTERVAL_MS),
+        ),
+      },
+    };
+  }
   if (recovery?.runId !== thread.latestRunId || recovery.resetAt !== thread.usageLimitResetAt) {
     if (nowMs - resetMs > MAX_OVERDUE_ARM_MS) return null;
     if (!autoResume && (!snooze || resetMs <= nowMs)) return null;
@@ -54,9 +76,10 @@ export function limitRecoveryCommand(
       },
     };
   }
+  const dueMs = recovery.nextResumeAt == null ? resetMs : Date.parse(recovery.nextResumeAt);
   if (
     !recovery.autoResume ||
-    resetMs > nowMs ||
+    dueMs > nowMs ||
     (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs)
   )
     return null;
